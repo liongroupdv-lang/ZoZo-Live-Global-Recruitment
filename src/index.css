@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", "Noto Sans Bengali", system-ui, -apple-system, sans-serif;
+  --font-sans: "DM Sans", "Noto Sans Bengali", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+    background-color: #FAFAFC;
+    color: #0F172A;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes zozoPulseNode {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes zozoFlowDash {
+  0% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+.zozo-map-node {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: zozoPulseNode 3.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.zozo-map-arc {
+  animation: zozoFlowDash 4.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zozo-map-node,
+  .zozo-map-arc {
+    animation: none;
+  }
+}

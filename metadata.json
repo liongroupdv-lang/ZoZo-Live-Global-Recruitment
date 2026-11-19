@@ -1,0 +1,6 @@
+{
+  "name": "ZoZo Live – Global Recruitment",
+  "description": "Official global recruitment portal and applicant management workspace for Super Admin, Admin, and Coin Seller roles across 249 countries and territories.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
