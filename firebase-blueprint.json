@@ -1,0 +1,252 @@
+{
+  "entities": {
+    "RecruitmentApplication": {
+      "title": "RecruitmentApplication",
+      "description": "Official ZoZo Live global recruitment application record for Super Admin, Admin, and Coin Seller roles.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Internal application identifier (e.g. ZOZO-2026-XXXXXX).",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Applicant full name.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "country": {
+          "type": "string",
+          "description": "Flag + Country Name label.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "countryFlag": {
+          "type": "string",
+          "description": "National flag emoji.",
+          "minLength": 0,
+          "maxLength": 32
+        },
+        "countryName": {
+          "type": "string",
+          "description": "Country display name.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "whatsapp": {
+          "type": "string",
+          "description": "Applicant WhatsApp phone number.",
+          "minLength": 6,
+          "maxLength": 40,
+          "pattern": "^[+]?[0-9][0-9\\s\\-()]{5,25}$"
+        },
+        "position": {
+          "type": "string",
+          "description": "Applied position.",
+          "enum": ["Super Admin", "Admin", "Coin Seller"]
+        },
+        "currentApp": {
+          "type": "string",
+          "description": "Currently working live streaming app.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "adminsCount": {
+          "type": "integer",
+          "description": "Number of Admins under applicant (Super Admin only)."
+        },
+        "agenciesCount": {
+          "type": "integer",
+          "description": "Number of Agencies managed by applicant (Super Admin and Admin)."
+        },
+        "coinPackage": {
+          "type": "string",
+          "description": "Preferred Coin Selling Package (Coin Seller only).",
+          "enum": ["$500", "$800", "$1,000"]
+        },
+        "workExperience": {
+          "type": "string",
+          "description": "Work or coin selling experience description.",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "cvFileName": {
+          "type": "string",
+          "description": "Original CV filename or manual admin placeholder.",
+          "minLength": 1,
+          "maxLength": 260
+        },
+        "cvMimeType": {
+          "type": "string",
+          "description": "MIME type of uploaded CV file.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "cvFileSize": {
+          "type": "integer",
+          "description": "Byte size of uploaded CV file (0 to 5242880)."
+        },
+        "cvLink": {
+          "type": "string",
+          "description": "Relative server CV endpoint or empty for manual entry.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "driveCvUrl": {
+          "type": "string",
+          "description": "Optional Google Drive CV URL if synced with Apps Script.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "sourceOrigin": {
+          "type": "string",
+          "description": "Origin URL where the application was submitted (e.g. Render or AI Studio).",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "cvChunkCount": {
+          "type": "integer",
+          "description": "Number of base64 chunks stored in cvChunks subcollection."
+        },
+        "status": {
+          "type": "string",
+          "description": "Review status managed by administrators.",
+          "enum": ["Pending", "Under Review", "Approved", "Rejected"]
+        },
+        "submittedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 submission timestamp.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "language": {
+          "type": "string",
+          "description": "Submission UI language.",
+          "enum": ["en", "bn"]
+        },
+        "appsScriptSynced": {
+          "type": "boolean",
+          "description": "Whether the application was synced to Google Apps Script."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp recorded at creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp recorded at last admin update."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "country",
+        "countryFlag",
+        "countryName",
+        "whatsapp",
+        "position",
+        "currentApp",
+        "workExperience",
+        "cvFileName",
+        "cvMimeType",
+        "cvFileSize",
+        "cvLink",
+        "status",
+        "submittedAt",
+        "language",
+        "appsScriptSynced",
+        "createdAt"
+      ]
+    },
+    "ApplicationCvChunk": {
+      "title": "ApplicationCvChunk",
+      "description": "Chunked base64 segment of an uploaded PDF/DOC/DOCX CV file so Admin Portal can download CVs across all deployments.",
+      "type": "object",
+      "properties": {
+        "applicationId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 750000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["applicationId", "index", "data", "createdAt"]
+    },
+    "AdminAccessRole": {
+      "title": "AdminAccessRole",
+      "description": "Authorized ZoZo Live Admin Portal team member role granted by the primary Owner.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "role": {
+          "type": "string",
+          "enum": ["Owner", "Editor", "Viewer"]
+        },
+        "canDelete": {
+          "type": "boolean"
+        },
+        "grantedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "grantedBy": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        }
+      },
+      "required": ["email", "role", "canDelete", "grantedAt", "grantedBy"]
+    },
+    "ConnectionTest": {
+      "title": "ConnectionTest",
+      "description": "Read-only connection check document.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "firestore": {
+    "/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/RecruitmentApplication" },
+      "description": "Publicly creatable recruitment applications readable and manageable strictly by authorized ZoZo Live admins."
+    },
+    "/applications/{applicationId}/cvChunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/ApplicationCvChunk" },
+      "description": "Private CV binary chunks readable only by authorized admins."
+    },
+    "/adminAccess/{emailKey}": {
+      "schema": { "$ref": "#/entities/AdminAccessRole" },
+      "description": "Admin access registry controlled exclusively by the primary Owner (liongroupdv@gmail.com)."
+    },
+    "/test/{docId}": {
+      "schema": { "$ref": "#/entities/ConnectionTest" },
+      "description": "Health/connection check document."
+    }
+  }
+}

@@ -1,0 +1,257 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ------------------------------------------------------------------------
+    // Primitive Helpers (Phase 3)
+    // ------------------------------------------------------------------------
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidLongId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function emailToKey(email) {
+      return email.lower().replace('[^a-z0-9]', '_');
+    }
+
+    function isOwner() {
+      return isSignedIn() && request.auth.token.email.lower() == 'liongroupdv@gmail.com';
+    }
+
+    function adminDocPath() {
+      return /databases/$(database)/documents/adminAccess/$(emailToKey(request.auth.token.email));
+    }
+
+    function isDelegatedAdmin() {
+      return isSignedIn() && exists(adminDocPath());
+    }
+
+    function isAdmin() {
+      return isOwner() || isDelegatedAdmin();
+    }
+
+    function isEditor() {
+      return isOwner() || (
+        isDelegatedAdmin() &&
+        get(adminDocPath()).data.role == 'Editor'
+      );
+    }
+
+    function canDeleteApps() {
+      return isOwner() || (
+        isDelegatedAdmin() &&
+        get(adminDocPath()).data.role == 'Editor' &&
+        get(adminDocPath()).data.canDelete == true
+      );
+    }
+
+    // ------------------------------------------------------------------------
+    // Validation Blueprints (Phase 4)
+    // ------------------------------------------------------------------------
+    function isValidApplicationShape(data, applicationId) {
+      let requiredKeys = [
+        'id',
+        'name',
+        'country',
+        'countryFlag',
+        'countryName',
+        'whatsapp',
+        'position',
+        'currentApp',
+        'workExperience',
+        'cvFileName',
+        'cvMimeType',
+        'cvFileSize',
+        'cvLink',
+        'status',
+        'submittedAt',
+        'language',
+        'appsScriptSynced',
+        'createdAt'
+      ];
+      let allowedKeys = [
+        'id',
+        'name',
+        'country',
+        'countryFlag',
+        'countryName',
+        'whatsapp',
+        'position',
+        'currentApp',
+        'adminsCount',
+        'agenciesCount',
+        'coinPackage',
+        'workExperience',
+        'cvFileName',
+        'cvMimeType',
+        'cvFileSize',
+        'cvLink',
+        'driveCvUrl',
+        'sourceOrigin',
+        'cvChunkCount',
+        'status',
+        'submittedAt',
+        'language',
+        'appsScriptSynced',
+        'createdAt',
+        'updatedAt'
+      ];
+
+      return data.keys().hasAll(requiredKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.id is string &&
+        data.id == applicationId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.country is string && data.country.size() >= 1 && data.country.size() <= 200 &&
+        data.countryFlag is string && data.countryFlag.size() <= 32 &&
+        data.countryName is string && data.countryName.size() >= 1 && data.countryName.size() <= 160 &&
+        data.whatsapp is string && data.whatsapp.size() >= 6 && data.whatsapp.size() <= 40 &&
+        data.whatsapp.matches('^[+]?[0-9][0-9\\s\\-()]{5,25}$') &&
+        data.position in ['Super Admin', 'Admin', 'Coin Seller'] &&
+        data.currentApp is string && data.currentApp.size() >= 1 && data.currentApp.size() <= 200 &&
+        data.workExperience is string && data.workExperience.size() >= 1 && data.workExperience.size() <= 5000 &&
+        data.cvFileName is string && data.cvFileName.size() >= 1 && data.cvFileName.size() <= 260 &&
+        data.cvMimeType is string && data.cvMimeType.size() <= 160 &&
+        data.cvFileSize is int && data.cvFileSize >= 0 && data.cvFileSize <= 5242880 &&
+        data.cvLink is string && data.cvLink.size() <= 500 &&
+        data.status in ['Pending', 'Under Review', 'Approved', 'Rejected'] &&
+        data.submittedAt is string && data.submittedAt.size() >= 1 && data.submittedAt.size() <= 64 &&
+        data.language in ['en', 'bn'] &&
+        data.appsScriptSynced is bool &&
+        data.createdAt is timestamp &&
+        (!('adminsCount' in data) || (data.adminsCount is int && data.adminsCount >= 0 && data.adminsCount <= 100000)) &&
+        (!('agenciesCount' in data) || (data.agenciesCount is int && data.agenciesCount >= 0 && data.agenciesCount <= 100000)) &&
+        (!('coinPackage' in data) || (data.coinPackage is string && data.coinPackage in ['$500', '$800', '$1,000'])) &&
+        (!('driveCvUrl' in data) || (data.driveCvUrl is string && data.driveCvUrl.size() <= 500)) &&
+        (!('sourceOrigin' in data) || (data.sourceOrigin is string && data.sourceOrigin.size() <= 300)) &&
+        (!('cvChunkCount' in data) || (data.cvChunkCount is int && data.cvChunkCount >= 0 && data.cvChunkCount <= 20)) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    function isValidRoleFields(data) {
+      return (data.position == 'Super Admin' &&
+          'adminsCount' in data &&
+          'agenciesCount' in data &&
+          !('coinPackage' in data)) ||
+        (data.position == 'Admin' &&
+          'agenciesCount' in data &&
+          !('coinPackage' in data)) ||
+        (data.position == 'Coin Seller' &&
+          'coinPackage' in data);
+    }
+
+    function isValidCvChunk(data, applicationId) {
+      return data.keys().hasAll(['applicationId', 'index', 'data', 'createdAt']) &&
+        data.keys().hasOnly(['applicationId', 'index', 'data', 'createdAt']) &&
+        data.applicationId is string &&
+        data.applicationId == applicationId &&
+        data.index is int && data.index >= 0 && data.index <= 20 &&
+        data.data is string && data.data.size() >= 1 && data.data.size() <= 750000 &&
+        data.createdAt == request.time;
+    }
+
+    function isValidAdminAccess(data) {
+      return data.keys().hasAll(['email', 'role', 'canDelete', 'grantedAt', 'grantedBy']) &&
+        data.keys().hasOnly(['email', 'role', 'canDelete', 'grantedAt', 'grantedBy']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.role in ['Owner', 'Editor', 'Viewer'] &&
+        data.canDelete is bool &&
+        data.grantedAt is string && data.grantedAt.size() >= 1 && data.grantedAt.size() <= 64 &&
+        data.grantedBy is string && data.grantedBy.size() >= 3 && data.grantedBy.size() <= 200;
+    }
+
+    // ------------------------------------------------------------------------
+    // Collection Rules
+    // ------------------------------------------------------------------------
+    match /applications/{applicationId} {
+      // Only verified administrators can read candidate PII
+      allow get: if isValidId(applicationId) && isAdmin();
+      allow list: if isAdmin();
+
+      // Public applicants may submit ONLY a new Pending application (no Google login required),
+      // OR verified Editors/Owner may create manual entries with any valid initial status.
+      allow create: if isValidId(applicationId) &&
+        isValidApplicationShape(incoming(), applicationId) &&
+        isValidRoleFields(incoming()) &&
+        incoming().createdAt == request.time &&
+        (
+          (incoming().status == 'Pending' && incoming().cvFileSize > 0 && !('updatedAt' in incoming())) ||
+          isEditor()
+        );
+
+      // Action-Based Update: Only Owner / Editor, immutable id & createdAt, strict allowlisted keys
+      allow update: if isValidId(applicationId) &&
+        isEditor() &&
+        isValidApplicationShape(incoming(), applicationId) &&
+        isValidRoleFields(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name',
+          'country',
+          'countryFlag',
+          'countryName',
+          'whatsapp',
+          'position',
+          'currentApp',
+          'adminsCount',
+          'agenciesCount',
+          'coinPackage',
+          'workExperience',
+          'status',
+          'appsScriptSynced',
+          'driveCvUrl',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(applicationId) && canDeleteApps();
+
+      match /cvChunks/{chunkId} {
+        allow get: if isValidId(applicationId) && isValidId(chunkId) && isAdmin();
+        allow list: if isValidId(applicationId) && isAdmin();
+        allow create: if isValidId(applicationId) &&
+          isValidId(chunkId) &&
+          isValidCvChunk(incoming(), applicationId) &&
+          (
+            (!exists(/databases/$(database)/documents/applications/$(applicationId)) &&
+              existsAfter(/databases/$(database)/documents/applications/$(applicationId))) ||
+            isEditor()
+          );
+        allow update: if false;
+        allow delete: if isValidId(applicationId) && isValidId(chunkId) && canDeleteApps();
+      }
+    }
+
+    match /adminAccess/{emailKey} {
+      allow get: if isValidLongId(emailKey) && isAdmin();
+      allow list: if isAdmin();
+      allow create, update: if isValidLongId(emailKey) && isOwner() && isValidAdminAccess(incoming());
+      allow delete: if isValidLongId(emailKey) && isOwner();
+    }
+
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+      allow list, write: if false;
+    }
+  }
+}

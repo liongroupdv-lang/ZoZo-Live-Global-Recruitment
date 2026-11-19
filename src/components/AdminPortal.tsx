@@ -1,6 +1,14 @@
 import type { User } from 'firebase/auth';
 import { Lock, LogOut, RefreshCw, ShieldAlert } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  deleteApplicationFromFirestore,
+  revokeAdminAccessFromFirestore,
+  saveApplicationToFirestore,
+  subscribeToApplicationsFromFirestore,
+  syncAdminAccessToFirestore,
+  updateApplicationInFirestore,
+} from '../lib/firestoreDb';
 import { googleSignIn, initAuth, logout } from '../lib/googleAuth';
 import type {
   AdminAccessEntry,
@@ -53,9 +61,36 @@ export function AdminPortal({
   const [session, setSession] = useState<AdminSessionInfo | null>(null);
   const [activeTab, setActiveTab] = useState<AdminTab>('applications');
 
-  const [applications, setApplications] = useState<RecruitmentApplication[]>([]);
+  const [serverApplications, setServerApplications] = useState<RecruitmentApplication[]>([]);
+  const [firestoreApplications, setFirestoreApplications] = useState<RecruitmentApplication[]>([]);
   const [loadingApps, setLoadingApps] = useState(false);
   const [appsError, setAppsError] = useState('');
+
+  const applications = useMemo(() => {
+    const merged = new Map<string, RecruitmentApplication>();
+    for (const app of serverApplications) {
+      merged.set(app.id, app);
+    }
+    for (const fsApp of firestoreApplications) {
+      const prev = merged.get(fsApp.id);
+      if (prev) {
+        merged.set(fsApp.id, {
+          ...prev,
+          ...fsApp,
+          driveCvUrl: fsApp.driveCvUrl || prev.driveCvUrl,
+          cvLink: prev.cvLink || fsApp.cvLink,
+          sourceOrigin: fsApp.sourceOrigin || prev.sourceOrigin,
+          cvChunkCount: fsApp.cvChunkCount ?? prev.cvChunkCount,
+          appsScriptSynced: Boolean(fsApp.appsScriptSynced || prev.appsScriptSynced),
+        });
+      } else {
+        merged.set(fsApp.id, fsApp);
+      }
+    }
+    return Array.from(merged.values()).sort(
+      (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+    );
+  }, [serverApplications, firestoreApplications]);
 
   const [adminEntries, setAdminEntries] = useState<AdminAccessEntry[]>([]);
   const [notifications, setNotifications] = useState<EmailNotificationRecord[]>([]);
@@ -132,7 +167,7 @@ export function AdminPortal({
         ]);
 
         if (appsRes.ok && Array.isArray(appsJson.applications)) {
-          setApplications(appsJson.applications);
+          setServerApplications(appsJson.applications);
         } else if (!appsRes.ok) {
           setAppsError(appsJson.error || 'Unable to load applications.');
         }
@@ -178,6 +213,20 @@ export function AdminPortal({
     return () => unsubscribe();
   }, [loadAdminWorkspace]);
 
+  // Real-time Firestore listener (syncs applications submitted on Render or any public URL)
+  useEffect(() => {
+    if (authState !== 'ready' || !session) return;
+    const unsubscribe = subscribeToApplicationsFromFirestore(
+      (items) => {
+        setFirestoreApplications(items);
+      },
+      (err) => {
+        console.warn('Firestore subscription notice:', err.message);
+      }
+    );
+    return () => unsubscribe();
+  }, [authState, session]);
+
   const handleLogin = async (forceConsent = false) => {
     setIsLoggingIn(true);
     setAuthError('');
@@ -202,7 +251,8 @@ export function AdminPortal({
     setAccessToken('');
     setWorkspaceToken('');
     setSession(null);
-    setApplications([]);
+    setServerApplications([]);
+    setFirestoreApplications([]);
     setAdminEntries([]);
     setNotifications([]);
     setAuthState('unauthenticated');
@@ -223,14 +273,26 @@ export function AdminPortal({
     if (!res.ok) {
       throw new Error(data.error || 'Unable to add application.');
     }
-    setApplications((prev) => [data.application, ...prev]);
-    return data.application;
+    const created: RecruitmentApplication = {
+      ...data.application,
+      sourceOrigin: typeof window !== 'undefined' ? window.location.origin : undefined,
+    };
+    setServerApplications((prev) => [created, ...prev]);
+    try {
+      await saveApplicationToFirestore(created, payload.cvFile?.base64);
+    } catch {
+      // Keep local server entry even if Firestore sync hits quota/offline
+    }
+    return created;
   };
 
   const handleUpdateApplication = async (
     id: string,
     payload: UpdateApplicationPayload
   ) => {
+    const existingApp = applications.find((item) => item.id === id);
+    const inFirestore = firestoreApplications.some((item) => item.id === id);
+
     const res = await fetch(`/api/admin/applications/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: {
@@ -239,25 +301,40 @@ export function AdminPortal({
       },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && !(res.status === 404 && inFirestore)) {
       throw new Error(data.error || 'Unable to update application.');
     }
-    setApplications((prev) =>
-      prev.map((item) => (item.id === id ? data.application : item))
+
+    if (inFirestore) {
+      await updateApplicationInFirestore(id, existingApp, payload);
+    }
+
+    if (res.ok && data.application) {
+      setServerApplications((prev) =>
+        prev.map((item) => (item.id === id ? data.application : item))
+      );
+    }
+    setFirestoreApplications((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...payload } : item))
     );
   };
 
   const handleDeleteApplication = async (id: string) => {
+    const inFirestore = firestoreApplications.some((item) => item.id === id);
     const res = await fetch(`/api/admin/applications/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    const data = await res.json();
-    if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && !(res.status === 404 && inFirestore)) {
       throw new Error(data.error || 'Unable to delete application.');
     }
-    setApplications((prev) => prev.filter((item) => item.id !== id));
+    if (inFirestore) {
+      await deleteApplicationFromFirestore(id);
+    }
+    setServerApplications((prev) => prev.filter((item) => item.id !== id));
+    setFirestoreApplications((prev) => prev.filter((item) => item.id !== id));
   };
 
   const handleGrantAccess = async (
@@ -277,6 +354,13 @@ export function AdminPortal({
     if (!res.ok) {
       throw new Error(data.error || 'Unable to grant access.');
     }
+    if (data.entry) {
+      try {
+        await syncAdminAccessToFirestore(data.entry);
+      } catch {
+        // Ignore secondary Firestore access sync warning
+      }
+    }
     if (Array.isArray(data.entries)) {
       setAdminEntries(data.entries);
     }
@@ -290,6 +374,11 @@ export function AdminPortal({
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || 'Unable to revoke access.');
+    }
+    try {
+      await revokeAdminAccessFromFirestore(email);
+    } catch {
+      // Ignore secondary Firestore access sync warning
     }
     if (Array.isArray(data.entries)) {
       setAdminEntries(data.entries);

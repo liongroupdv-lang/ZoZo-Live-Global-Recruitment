@@ -791,6 +791,7 @@ async function startServer() {
           submittedAt: record.submittedAt,
         },
         appsScriptSynced,
+        driveCvUrl: record.driveCvUrl,
       });
     } catch (err) {
       return res.status(400).json({
@@ -818,7 +819,70 @@ async function startServer() {
   app.get('/api/admin/applications', async (req, res) => {
     const admin = await requireAdmin(req, res);
     if (!admin) return;
-    const apps = readJsonArray<RecruitmentApplication>(DATA_FILE).sort(
+
+    const localApps = readJsonArray<RecruitmentApplication>(DATA_FILE);
+    const byId = new Map<string, RecruitmentApplication>();
+    for (const appRecord of localApps) {
+      byId.set(appRecord.id, appRecord);
+    }
+
+    const config = readBackendConfig();
+    if (config.appsScriptWebAppUrl && admin.accessToken && !admin.accessToken.includes('.')) {
+      try {
+        const gsRes = await callAppsScriptBackend(config.appsScriptWebAppUrl, {
+          action: 'adminList',
+          accessToken: admin.accessToken,
+        });
+        if (gsRes && gsRes.ok && Array.isArray(gsRes.applications)) {
+          let mergedCount = 0;
+          for (const remote of gsRes.applications as Array<Record<string, unknown>>) {
+            const rid = String(remote.id || '').trim();
+            if (!rid || byId.has(rid)) continue;
+            const countryLabel = String(remote.country || '');
+            const spaceIdx = countryLabel.indexOf(' ');
+            const flagGuess = spaceIdx > 0 ? countryLabel.slice(0, spaceIdx) : '';
+            const nameGuess = spaceIdx > 0 ? countryLabel.slice(spaceIdx + 1) : countryLabel;
+            const imported: RecruitmentApplication = {
+              id: rid,
+              name: String(remote.name || ''),
+              country: countryLabel,
+              countryFlag: flagGuess,
+              countryName: nameGuess || countryLabel,
+              whatsapp: String(remote.whatsapp || ''),
+              position: (remote.position as RolePosition) || 'Admin',
+              currentApp: String(remote.currentApp || ''),
+              adminsCount: typeof remote.adminsCount === 'number' ? remote.adminsCount : undefined,
+              agenciesCount: typeof remote.agenciesCount === 'number' ? remote.agenciesCount : undefined,
+              coinPackage: remote.coinPackage as CoinPackageOption | undefined,
+              workExperience: String(remote.workExperience || ''),
+              cvFileName: `${rid}-cv`,
+              cvMimeType: '',
+              cvFileSize: 0,
+              cvLink: String(remote.cvLink || ''),
+              driveCvUrl:
+                typeof remote.cvLink === 'string' && remote.cvLink.startsWith('http')
+                  ? remote.cvLink
+                  : undefined,
+              status: VALID_STATUSES.includes(remote.status as ApplicationStatus)
+                ? (remote.status as ApplicationStatus)
+                : 'Pending',
+              submittedAt: String(remote.submittedAt || new Date().toISOString()),
+              language: 'en',
+              appsScriptSynced: true,
+            };
+            byId.set(rid, imported);
+            mergedCount++;
+          }
+          if (mergedCount > 0) {
+            writeJsonArray(DATA_FILE, Array.from(byId.values()));
+          }
+        }
+      } catch {
+        // Keep local data if Apps Script list fails
+      }
+    }
+
+    const apps = Array.from(byId.values()).sort(
       (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
     );
     return res.json({ applications: apps });

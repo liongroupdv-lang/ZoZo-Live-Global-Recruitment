@@ -15,7 +15,8 @@ import {
 import { useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from 'react';
 import type { CountryOption } from '../data/countries';
 import { COIN_PACKAGE_OPTIONS, RECRUITMENT_COPY, type Language } from '../data/translations';
-import type { CoinPackageOption, RolePosition } from '../types/recruitment';
+import { saveApplicationToFirestore } from '../lib/firestoreDb';
+import type { CoinPackageOption, RecruitmentApplication, RolePosition } from '../types/recruitment';
 import { CountrySelector } from './CountrySelector';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { ZoZoLogo } from './ZoZoLogo';
@@ -316,24 +317,98 @@ export function ApplicationForm({
         payload.coinPackage = coinPackage;
       }
 
-      const response = await fetch('/api/applications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      let receiptData: ApplicationReceipt | null = null;
+      let appsScriptSynced = false;
+      let driveCvUrl: string | undefined;
+      let serverDownOr5xx = false;
 
-      const data = await response.json();
-      if (response.status === 409) {
-        setSubmitErrorType('duplicate');
+      try {
+        const response = await fetch('/api/applications', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (response.status === 409) {
+          setSubmitErrorType('duplicate');
+          return;
+        }
+        if (response.status >= 400 && response.status < 500) {
+          setSubmitErrorType('server');
+          setServerErrorText(data.error || copy.form.genericSubmitError);
+          return;
+        }
+        if (response.ok && data.receipt) {
+          receiptData = data.receipt;
+          appsScriptSynced = Boolean(data.appsScriptSynced);
+          driveCvUrl = data.driveCvUrl ? String(data.driveCvUrl) : undefined;
+        } else {
+          serverDownOr5xx = true;
+        }
+      } catch {
+        serverDownOr5xx = true;
+      }
+
+      if (!receiptData) {
+        const fallbackId = `ZOZO-${new Date().getFullYear()}-${Math.random()
+          .toString(36)
+          .slice(2, 8)
+          .toUpperCase()}`;
+        receiptData = {
+          id: fallbackId,
+          name: name.trim(),
+          country: country.label,
+          whatsapp: whatsapp.trim(),
+          position: selectedRole,
+          cvFileName: cvFile.name,
+          submittedAt: new Date().toISOString(),
+        };
+      }
+
+      const firestoreRecord: RecruitmentApplication = {
+        id: receiptData.id,
+        name: name.trim(),
+        country: country.label,
+        countryFlag: country.flag,
+        countryName: country.name,
+        whatsapp: whatsapp.trim(),
+        position: selectedRole,
+        currentApp: currentApp.trim(),
+        adminsCount: selectedRole === 'Super Admin' ? Number(adminsCount) : undefined,
+        agenciesCount:
+          selectedRole === 'Super Admin' || selectedRole === 'Admin'
+            ? Number(agenciesCount)
+            : undefined,
+        coinPackage:
+          selectedRole === 'Coin Seller' && coinPackage ? coinPackage : undefined,
+        workExperience: workExperience.trim(),
+        cvFileName: cvFile.name,
+        cvMimeType: cvFile.mimeType,
+        cvFileSize: cvFile.size,
+        cvLink: `/api/admin/cv/${encodeURIComponent(receiptData.id)}`,
+        driveCvUrl,
+        sourceOrigin: typeof window !== 'undefined' ? window.location.origin : undefined,
+        status: 'Pending',
+        submittedAt: receiptData.submittedAt,
+        language,
+        appsScriptSynced,
+      };
+
+      let firestoreSaved = false;
+      try {
+        await saveApplicationToFirestore(firestoreRecord, cvFile.base64);
+        firestoreSaved = true;
+      } catch {
+        // Ignore only if server already persisted it
+      }
+
+      if (serverDownOr5xx && !firestoreSaved) {
+        setSubmitErrorType('network');
         return;
       }
-      if (!response.ok) {
-        setSubmitErrorType('server');
-        setServerErrorText(data.error || copy.form.genericSubmitError);
-        return;
-      }
 
-      setReceipt(data.receipt);
+      setReceipt(receiptData);
     } catch {
       setSubmitErrorType('network');
     } finally {

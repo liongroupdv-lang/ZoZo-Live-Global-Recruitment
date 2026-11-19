@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import { ALL_COUNTRIES } from '../data/countries';
 import { COIN_PACKAGE_OPTIONS } from '../data/translations';
+import { downloadCvFromFirestore } from '../lib/firestoreDb';
 import type {
   AdminAccessEntry,
   AdminCreateApplicationPayload,
@@ -258,17 +259,39 @@ export function ApplicationsDashboard({
       const res = await fetch(`/api/admin/cv/${encodeURIComponent(app.id)}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Unable to download CV file.');
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = app.cvFileName || `${app.id}-cv.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = app.cvFileName || `${app.id}-cv.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+
+      // Fallback: reassemble CV from Cloud Firestore chunks (for cross-host submissions e.g. Render)
+      const fsCv = await downloadCvFromFirestore(app.id);
+      if (fsCv?.base64) {
+        const binary = atob(fsCv.base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], {
+          type: app.cvMimeType || 'application/octet-stream',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = app.cvFileName || `${app.id}-cv.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Unable to download CV file.');
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'CV download failed.');
     } finally {
@@ -654,6 +677,14 @@ export function ApplicationsDashboard({
                 <span className="tabular-nums">
                   {formatShortDate(selectedApplication.submittedAt)}
                 </span>
+                {selectedApplication.sourceOrigin && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono text-[11px] text-slate-500">
+                      {selectedApplication.sourceOrigin.replace(/^https?:\/\//, '')}
+                    </span>
+                  </>
+                )}
               </div>
               <h2 className="mt-1 font-display text-xl font-bold text-slate-900">
                 {selectedApplication.name}
@@ -947,7 +978,7 @@ export function ApplicationsDashboard({
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {selectedApplication.cvLink && selectedApplication.cvFileSize > 0 && (
+                  {selectedApplication.cvFileSize > 0 && (
                     <button
                       type="button"
                       disabled={downloadingCvId === selectedApplication.id}

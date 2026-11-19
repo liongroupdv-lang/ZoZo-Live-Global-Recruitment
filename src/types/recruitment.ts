@@ -28,6 +28,8 @@ export interface RecruitmentApplication {
   submittedAt: string;
   language: 'en' | 'bn';
   appsScriptSynced?: boolean;
+  sourceOrigin?: string;
+  cvChunkCount?: number;
 }
 
 export interface CvFilePayload {
