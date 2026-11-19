@@ -9,6 +9,7 @@ import {
   Search,
   Shield,
   Trash2,
+  UserPlus,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -16,14 +17,17 @@ import { ALL_COUNTRIES } from '../data/countries';
 import { COIN_PACKAGE_OPTIONS } from '../data/translations';
 import type {
   AdminAccessEntry,
+  AdminCreateApplicationPayload,
   AdminPermissionLevel,
   ApplicationStatus,
+  BackendConfig,
   CoinPackageOption,
   EmailNotificationRecord,
   RecruitmentApplication,
   RolePosition,
   UpdateApplicationPayload,
 } from '../types/recruitment';
+import { AddApplicationModal } from './AddApplicationModal';
 import { ConfirmModal } from './ConfirmModal';
 import { EmailNotificationsPanel } from './EmailNotificationsPanel';
 import { ManageAdminAccessModal } from './ManageAdminAccessModal';
@@ -34,6 +38,7 @@ interface ApplicationsDashboardProps {
   error: string;
   initialSelectedId?: string | null;
   accessToken: string;
+  onCreateApplication: (payload: AdminCreateApplicationPayload) => Promise<RecruitmentApplication>;
   onUpdateApplication: (id: string, payload: UpdateApplicationPayload) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   ownerEmail: string;
@@ -48,7 +53,10 @@ interface ApplicationsDashboardProps {
   ) => Promise<void>;
   onRevokeAccess: (email: string) => Promise<void>;
   notifications: EmailNotificationRecord[];
-  onSendTestNotification: (language: 'en' | 'bn') => Promise<void>;
+  backendConfig: BackendConfig;
+  onSendTestNotification: (language: 'en' | 'bn') => Promise<EmailNotificationRecord | undefined>;
+  onSaveGmailSettings: (email: string, appPassword: string) => Promise<void>;
+  onClearGmailSettings: () => Promise<void>;
 }
 
 type RoleFilter = 'All' | RolePosition;
@@ -107,6 +115,7 @@ export function ApplicationsDashboard({
   error,
   initialSelectedId = null,
   accessToken,
+  onCreateApplication,
   onUpdateApplication,
   onDelete,
   ownerEmail,
@@ -117,7 +126,10 @@ export function ApplicationsDashboard({
   onGrantAccess,
   onRevokeAccess,
   notifications,
+  backendConfig,
   onSendTestNotification,
+  onSaveGmailSettings,
+  onClearGmailSettings,
 }: ApplicationsDashboardProps) {
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('All');
   const [statusFilter, setStatusFilter] = useState<'All' | ApplicationStatus>('All');
@@ -130,6 +142,7 @@ export function ApplicationsDashboard({
 
   const [accessModalOpen, setAccessModalOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [addModalOpen, setAddModalOpen] = useState(false);
 
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState<UpdateApplicationPayload>({});
@@ -355,6 +368,16 @@ export function ApplicationsDashboard({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {canModify && (
+            <button
+              type="button"
+              onClick={() => setAddModalOpen(true)}
+              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-[#4C1D95] hover:bg-[#5B21B6] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Add Application</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setNotificationsOpen(true)}
@@ -913,27 +936,32 @@ export function ApplicationsDashboard({
                       {selectedApplication.cvFileName || 'Applicant CV File'}
                     </div>
                     <div className="text-[11px] text-slate-500 font-mono tabular-nums">
-                      {formatFileSize(selectedApplication.cvFileSize)}
-                      {selectedApplication.driveCvUrl
-                        ? ' · Stored in Private Google Drive'
-                        : ' · Stored Privately'}
+                      {selectedApplication.cvFileSize > 0
+                        ? `${formatFileSize(selectedApplication.cvFileSize)}${
+                            selectedApplication.driveCvUrl
+                              ? ' · Stored in Private Google Drive'
+                              : ' · Stored Privately'
+                          }`
+                        : 'Manual Admin Entry · No CV attached'}
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    disabled={downloadingCvId === selectedApplication.id}
-                    onClick={() => handleDownloadCv(selectedApplication)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer whitespace-nowrap"
-                  >
-                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>
-                      {downloadingCvId === selectedApplication.id
-                        ? 'Downloading...'
-                        : 'Open / Download CV'}
-                    </span>
-                  </button>
+                  {selectedApplication.cvLink && selectedApplication.cvFileSize > 0 && (
+                    <button
+                      type="button"
+                      disabled={downloadingCvId === selectedApplication.id}
+                      onClick={() => handleDownloadCv(selectedApplication)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer whitespace-nowrap"
+                    >
+                      <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>
+                        {downloadingCvId === selectedApplication.id
+                          ? 'Downloading...'
+                          : 'Open / Download CV'}
+                      </span>
+                    </button>
+                  )}
                   {selectedApplication.driveCvUrl && (
                     <a
                       href={selectedApplication.driveCvUrl}
@@ -1027,8 +1055,12 @@ export function ApplicationsDashboard({
         open={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
         ownerEmail={ownerEmail}
+        actorRole={actorRole}
+        backendConfig={backendConfig}
         notifications={notifications}
         onSendTest={onSendTestNotification}
+        onSaveGmailSettings={onSaveGmailSettings}
+        onClearGmailSettings={onClearGmailSettings}
       />
 
       <ConfirmModal
@@ -1045,6 +1077,15 @@ export function ApplicationsDashboard({
         onConfirm={handleConfirmDelete}
         onCancel={() => {
           if (!deletingBusy) setPendingDeleteApp(null);
+        }}
+      />
+      <AddApplicationModal
+        open={addModalOpen}
+        onClose={() => setAddModalOpen(false)}
+        onCreate={async (payload) => {
+          const created = await onCreateApplication(payload);
+          setSelectedId(created.id);
+          setEditing(false);
         }}
       />
     </div>

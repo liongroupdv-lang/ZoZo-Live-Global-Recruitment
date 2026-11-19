@@ -54,6 +54,22 @@ export interface CreateApplicationPayload {
   submissionToken: string;
 }
 
+export interface AdminCreateApplicationPayload {
+  name: string;
+  country: string;
+  countryFlag: string;
+  countryName: string;
+  whatsapp: string;
+  position: RolePosition;
+  currentApp: string;
+  adminsCount?: number;
+  agenciesCount?: number;
+  coinPackage?: CoinPackageOption;
+  workExperience: string;
+  status?: ApplicationStatus;
+  cvFile?: CvFilePayload;
+}
+
 export interface UpdateApplicationPayload {
   name?: string;
   country?: string;
@@ -95,9 +111,10 @@ export interface EmailNotificationRecord {
   viewUrl: string;
   language: 'en' | 'bn';
   deliveryStatus:
+    | 'Sent to Gmail (SMTP)'
     | 'Sent via Resend'
     | 'Sent via Apps Script MailApp'
-    | 'Logged (Deploy Apps Script for Gmail Delivery)';
+    | 'Logged (Configure Gmail SMTP or Apps Script for Delivery)';
   sentAt: string;
 }
 
@@ -107,6 +124,8 @@ export interface BackendConfig {
   driveCvFolderUrl: string;
   googleFormId?: string;
   googleFormUrl?: string;
+  gmailSmtpEmail?: string;
+  gmailAppPasswordConfigured?: boolean;
   ownerEmail: string;
   updatedAt?: string;
 }

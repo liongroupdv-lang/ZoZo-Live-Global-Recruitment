@@ -239,6 +239,22 @@ function doPost(e) {
       return handleAdminManageAccess_(body);
     }
 
+    if (action === 'sendTestNotification') {
+      var sample = body.sampleApp || {};
+      var testSubject = 'New Application Received – ZoZo Live Recruitment';
+      var testBody = [
+        'Test Notification – ZoZo Live Recruitment',
+        '================================================',
+        'Applicant Name : ' + (sample.name || 'Test Applicant'),
+        'Country        : ' + (sample.country || '🇧🇩 Bangladesh'),
+        'WhatsApp       : ' + (sample.whatsapp || '+880 1712 345678'),
+        'Position       : ' + (sample.position || 'Super Admin'),
+        'Admin Portal   : ' + ADMIN_DASHBOARD_URL
+      ].join('\\n');
+      MailApp.sendEmail(OWNER_EMAIL, testSubject, testBody);
+      return jsonResponse_({ ok: true, emailSent: true });
+    }
+
     return jsonResponse_({ ok: false, error: 'Unsupported action.' });
   } catch (err) {
     return jsonResponse_({ ok: false, error: err && err.message ? err.message : String(err) });
@@ -332,8 +348,17 @@ function handleSubmitApplication_(data) {
   }
 
   if (!cvUrl) {
-    throw new Error('CV file upload is required.');
+    if (data.adminManualEntry === true) {
+      cvUrl = 'Added Manually by Admin (No CV)';
+    } else {
+      throw new Error('CV file upload is required.');
+    }
   }
+
+  var initialStatus =
+    data.status && VALID_STATUSES.indexOf(String(data.status)) !== -1
+      ? String(data.status)
+      : 'Pending';
 
   // Append row atomically to private Google Sheet
   var rowValues = [
@@ -349,7 +374,7 @@ function handleSubmitApplication_(data) {
     coinPackage || '—',
     workExperience,
     cvUrl,
-    'Pending'
+    initialStatus
   ];
 
   var lock = LockService.getScriptLock();

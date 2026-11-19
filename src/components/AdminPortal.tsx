@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { googleSignIn, initAuth, logout } from '../lib/googleAuth';
 import type {
   AdminAccessEntry,
+  AdminCreateApplicationPayload,
   AdminPermissionLevel,
   BackendConfig,
   BrandAssets,
@@ -45,6 +46,7 @@ export function AdminPortal({
   );
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string>('');
+  const [workspaceToken, setWorkspaceToken] = useState<string>('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState('');
 
@@ -63,87 +65,112 @@ export function AdminPortal({
     driveCvFolderUrl: '',
     googleFormId: '',
     googleFormUrl: '',
+    gmailSmtpEmail: 'liongroupdv@gmail.com',
+    gmailAppPasswordConfigured: false,
     ownerEmail: 'liongroupdv@gmail.com',
   });
 
   const publicOrigin =
     typeof window !== 'undefined' ? window.location.origin : '';
 
-  const loadAdminWorkspace = useCallback(async (token: string) => {
-    setAuthState('loading');
-    setAuthError('');
-    setAppsError('');
+  const buildAdminHeaders = useCallback(
+    (token: string, wsToken?: string, json = false): Record<string, string> => {
+      const h: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+      };
+      const effectiveWs = wsToken ?? workspaceToken;
+      if (effectiveWs) {
+        h['X-Google-Access-Token'] = effectiveWs;
+      }
+      if (json) {
+        h['Content-Type'] = 'application/json';
+      }
+      return h;
+    },
+    [workspaceToken]
+  );
 
-    try {
-      const headers = { Authorization: `Bearer ${token}` };
-      const sessionRes = await fetch('/api/admin/session', { headers });
-      const sessionData = await sessionRes.json();
+  const loadAdminWorkspace = useCallback(
+    async (token: string, wsToken?: string) => {
+      setAuthState('loading');
+      setAuthError('');
+      setAppsError('');
 
-      if (sessionRes.status === 401) {
+      try {
+        const headers = buildAdminHeaders(token, wsToken);
+        const sessionRes = await fetch('/api/admin/session', { headers });
+        const sessionData = await sessionRes.json();
+
+        if (sessionRes.status === 401) {
+          setAuthState('unauthenticated');
+          return;
+        }
+        if (sessionRes.status === 403) {
+          setAuthError(sessionData.error || 'Your Google account is not authorized.');
+          setAuthState('denied');
+          return;
+        }
+        if (!sessionRes.ok) {
+          throw new Error(sessionData.error || 'Failed to verify administrator session.');
+        }
+
+        setSession(sessionData);
+        setLoadingApps(true);
+
+        const [appsRes, accessRes, notifRes, configRes] = await Promise.all([
+          fetch('/api/admin/applications', { headers }),
+          fetch('/api/admin/access', { headers }),
+          fetch('/api/admin/notifications', { headers }),
+          fetch('/api/admin/backend-config', { headers }),
+        ]);
+
+        const [appsJson, accessJson, notifJson, configJson] = await Promise.all([
+          appsRes.json(),
+          accessRes.json(),
+          notifRes.json(),
+          configRes.json(),
+        ]);
+
+        if (appsRes.ok && Array.isArray(appsJson.applications)) {
+          setApplications(appsJson.applications);
+        } else if (!appsRes.ok) {
+          setAppsError(appsJson.error || 'Unable to load applications.');
+        }
+
+        if (accessRes.ok && Array.isArray(accessJson.entries)) {
+          setAdminEntries(accessJson.entries);
+        }
+        if (notifRes.ok && Array.isArray(notifJson.notifications)) {
+          setNotifications(notifJson.notifications);
+        }
+        if (configRes.ok && configJson) {
+          setBackendConfig(configJson);
+        }
+
+        setAuthState('ready');
+      } catch (err) {
+        setAuthError(err instanceof Error ? err.message : 'Unable to connect to Admin backend.');
         setAuthState('unauthenticated');
-        return;
+      } finally {
+        setLoadingApps(false);
       }
-      if (sessionRes.status === 403) {
-        setAuthError(sessionData.error || 'Your Google account is not authorized.');
-        setAuthState('denied');
-        return;
-      }
-      if (!sessionRes.ok) {
-        throw new Error(sessionData.error || 'Failed to verify administrator session.');
-      }
-
-      setSession(sessionData);
-      setLoadingApps(true);
-
-      const [appsRes, accessRes, notifRes, configRes] = await Promise.all([
-        fetch('/api/admin/applications', { headers }),
-        fetch('/api/admin/access', { headers }),
-        fetch('/api/admin/notifications', { headers }),
-        fetch('/api/admin/backend-config', { headers }),
-      ]);
-
-      const [appsJson, accessJson, notifJson, configJson] = await Promise.all([
-        appsRes.json(),
-        accessRes.json(),
-        notifRes.json(),
-        configRes.json(),
-      ]);
-
-      if (appsRes.ok && Array.isArray(appsJson.applications)) {
-        setApplications(appsJson.applications);
-      } else if (!appsRes.ok) {
-        setAppsError(appsJson.error || 'Unable to load applications.');
-      }
-
-      if (accessRes.ok && Array.isArray(accessJson.entries)) {
-        setAdminEntries(accessJson.entries);
-      }
-      if (notifRes.ok && Array.isArray(notifJson.notifications)) {
-        setNotifications(notifJson.notifications);
-      }
-      if (configRes.ok && configJson) {
-        setBackendConfig(configJson);
-      }
-
-      setAuthState('ready');
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Unable to connect to Admin backend.');
-      setAuthState('unauthenticated');
-    } finally {
-      setLoadingApps(false);
-    }
-  }, []);
+    },
+    [buildAdminHeaders]
+  );
 
   useEffect(() => {
+    setAuthState('loading');
     const unsubscribe = initAuth(
-      (authedUser, token) => {
+      (authedUser, sessionToken, wsToken) => {
         setUser(authedUser);
-        setAccessToken(token);
-        loadAdminWorkspace(token);
+        setAccessToken(sessionToken);
+        if (wsToken) setWorkspaceToken(wsToken);
+        loadAdminWorkspace(sessionToken, wsToken);
       },
       () => {
         setUser(null);
         setAccessToken('');
+        setWorkspaceToken('');
         setSession(null);
         setAuthState('unauthenticated');
       }
@@ -151,15 +178,16 @@ export function AdminPortal({
     return () => unsubscribe();
   }, [loadAdminWorkspace]);
 
-  const handleLogin = async () => {
+  const handleLogin = async (forceConsent = false) => {
     setIsLoggingIn(true);
     setAuthError('');
     try {
-      const result = await googleSignIn();
+      const result = await googleSignIn({ forceConsent });
       if (result) {
         setUser(result.user);
-        setAccessToken(result.accessToken);
-        await loadAdminWorkspace(result.accessToken);
+        setAccessToken(result.sessionToken);
+        if (result.accessToken) setWorkspaceToken(result.accessToken);
+        await loadAdminWorkspace(result.sessionToken, result.accessToken);
       }
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'Google sign-in was cancelled or failed.');
@@ -172,11 +200,31 @@ export function AdminPortal({
     await logout();
     setUser(null);
     setAccessToken('');
+    setWorkspaceToken('');
     setSession(null);
     setApplications([]);
     setAdminEntries([]);
     setNotifications([]);
     setAuthState('unauthenticated');
+  };
+
+  const handleCreateApplication = async (
+    payload: AdminCreateApplicationPayload
+  ): Promise<RecruitmentApplication> => {
+    const res = await fetch('/api/admin/applications', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Unable to add application.');
+    }
+    setApplications((prev) => [data.application, ...prev]);
+    return data.application;
   };
 
   const handleUpdateApplication = async (
@@ -248,13 +296,12 @@ export function AdminPortal({
     }
   };
 
-  const handleSendTestNotification = async (lang: 'en' | 'bn') => {
+  const handleSendTestNotification = async (
+    lang: 'en' | 'bn'
+  ): Promise<EmailNotificationRecord | undefined> => {
     const res = await fetch('/api/admin/notifications/test', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
+      headers: buildAdminHeaders(accessToken, undefined, true),
       body: JSON.stringify({ language: lang }),
     });
     const data = await res.json();
@@ -263,6 +310,36 @@ export function AdminPortal({
     }
     if (data.notification) {
       setNotifications((prev) => [data.notification, ...prev]);
+    }
+    return data.notification;
+  };
+
+  const handleSaveGmailSettings = async (email: string, appPassword: string) => {
+    const res = await fetch('/api/admin/gmail-settings', {
+      method: 'PUT',
+      headers: buildAdminHeaders(accessToken, undefined, true),
+      body: JSON.stringify({ email, appPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Unable to verify Gmail App Password.');
+    }
+    if (data.config) {
+      setBackendConfig(data.config);
+    }
+  };
+
+  const handleClearGmailSettings = async () => {
+    const res = await fetch('/api/admin/gmail-settings', {
+      method: 'DELETE',
+      headers: buildAdminHeaders(accessToken),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Unable to remove Gmail SMTP settings.');
+    }
+    if (data.config) {
+      setBackendConfig(data.config);
     }
   };
 
@@ -355,7 +432,7 @@ export function AdminPortal({
 
           <div className="mt-6">
             <GoogleSignInButton
-              onClick={handleLogin}
+              onClick={() => handleLogin(false)}
               loading={isLoggingIn || authState === 'loading'}
             />
           </div>
@@ -534,6 +611,7 @@ export function AdminPortal({
             error={appsError}
             initialSelectedId={initialSelectedId}
             accessToken={accessToken}
+            onCreateApplication={handleCreateApplication}
             onUpdateApplication={handleUpdateApplication}
             onDelete={handleDeleteApplication}
             ownerEmail={session.ownerEmail}
@@ -544,7 +622,10 @@ export function AdminPortal({
             onGrantAccess={handleGrantAccess}
             onRevokeAccess={handleRevokeAccess}
             notifications={notifications}
+            backendConfig={backendConfig}
             onSendTestNotification={handleSendTestNotification}
+            onSaveGmailSettings={handleSaveGmailSettings}
+            onClearGmailSettings={handleClearGmailSettings}
           />
         )}
 
@@ -552,11 +633,11 @@ export function AdminPortal({
           <GoogleFormConnector
             config={backendConfig}
             actorRole={session.role}
-            accessToken={accessToken}
+            accessToken={workspaceToken}
             publicOrigin={publicOrigin}
             onSaveConfig={handleSaveBackendConfig}
             onReconnectGoogle={async () => {
-              await handleLogin();
+              await handleLogin(true);
             }}
           />
         )}

@@ -2,8 +2,10 @@ import express, { type Request, type Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 import type {
   AdminAccessEntry,
+  AdminCreateApplicationPayload,
   AdminPermissionLevel,
   ApplicationStatus,
   BackendConfig,
@@ -19,8 +21,19 @@ import type {
 const PORT = Number(process.env.PORT || 3000);
 const OWNER_EMAIL = (process.env.OWNER_EMAIL || 'liongroupdv@gmail.com').trim().toLowerCase();
 const APP_BASE_URL = (
-  process.env.APP_URL || 'https://ais-dev-menrapitnclw3tdj2oqpih-957770790639.asia-east1.run.app'
+  process.env.APP_URL || 'https://ais-pre-menrapitnclw3tdj2oqpih-957770790639.asia-east1.run.app'
 ).replace(/\/$/, '');
+
+const FIREBASE_CONFIG_PATH = path.resolve(process.cwd(), 'firebase-applet-config.json');
+let FIREBASE_WEB_API_KEY = process.env.FIREBASE_WEB_API_KEY || '';
+try {
+  if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
+    const parsedFb = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf8'));
+    if (parsedFb.apiKey) FIREBASE_WEB_API_KEY = String(parsedFb.apiKey).trim();
+  }
+} catch {
+  // Ignore config read error
+}
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const PRIVATE_CV_DIR = path.join(DATA_DIR, 'private-cvs');
@@ -30,11 +43,12 @@ const ACCESS_FILE = path.join(DATA_DIR, 'admin-access.json');
 const NOTIFICATIONS_FILE = path.join(DATA_DIR, 'email-notifications.json');
 const BACKEND_CONFIG_FILE = path.join(DATA_DIR, 'backend-config.json');
 const BRAND_CONFIG_FILE = path.join(DATA_DIR, 'brand-assets.json');
+const GMAIL_SMTP_FILE = path.join(DATA_DIR, 'gmail-smtp.json');
 
 const VALID_ROLES: RolePosition[] = ['Super Admin', 'Admin', 'Coin Seller'];
 const VALID_STATUSES: ApplicationStatus[] = ['Pending', 'Under Review', 'Approved', 'Rejected'];
 const VALID_COIN_PACKAGES: CoinPackageOption[] = ['$500', '$800', '$1,000'];
-const WHATSAPP_REGEX = /^[+]?[0-9][0-9\s\-()]{5,22}$/;
+const WHATSAPP_REGEX = /^[+]?[0-9][0-9\s\-()]{5,25}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_CV_BYTES = 5 * 1024 * 1024; // 5 MB
 const MAX_BRAND_BYTES = 2 * 1024 * 1024; // 2 MB
@@ -106,8 +120,46 @@ function writeJsonArray<T>(filePath: string, data: T[]): void {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
 }
 
+function readGmailSmtpSecret(): { email: string; appPassword: string } {
+  ensureStorage();
+  const envPass = String(process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '').trim();
+  const envUser = String(process.env.GMAIL_SMTP_EMAIL || OWNER_EMAIL).trim().toLowerCase();
+  if (envPass) {
+    return { email: envUser, appPassword: envPass };
+  }
+  try {
+    if (fs.existsSync(GMAIL_SMTP_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(GMAIL_SMTP_FILE, 'utf8'));
+      const pass = String(raw.appPassword || '').replace(/\s+/g, '').trim();
+      const email = String(raw.email || OWNER_EMAIL).trim().toLowerCase();
+      if (pass) return { email, appPassword: pass };
+    }
+  } catch {
+    // Ignore file read error
+  }
+  return { email: OWNER_EMAIL, appPassword: '' };
+}
+
+function writeGmailSmtpSecret(email: string, appPassword: string): void {
+  ensureStorage();
+  fs.writeFileSync(
+    GMAIL_SMTP_FILE,
+    JSON.stringify(
+      {
+        email: email.trim().toLowerCase() || OWNER_EMAIL,
+        appPassword: appPassword.replace(/\s+/g, '').trim(),
+        updatedAt: new Date().toISOString(),
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+}
+
 function readBackendConfig(): BackendConfig {
   ensureStorage();
+  const smtp = readGmailSmtpSecret();
   try {
     const raw = JSON.parse(fs.readFileSync(BACKEND_CONFIG_FILE, 'utf8'));
     return {
@@ -116,6 +168,8 @@ function readBackendConfig(): BackendConfig {
       driveCvFolderUrl: String(raw.driveCvFolderUrl || ''),
       googleFormId: raw.googleFormId ? String(raw.googleFormId) : '',
       googleFormUrl: raw.googleFormUrl ? String(raw.googleFormUrl) : '',
+      gmailSmtpEmail: smtp.email,
+      gmailAppPasswordConfigured: Boolean(smtp.appPassword),
       ownerEmail: OWNER_EMAIL,
       updatedAt: raw.updatedAt,
     };
@@ -126,6 +180,8 @@ function readBackendConfig(): BackendConfig {
       driveCvFolderUrl: '',
       googleFormId: '',
       googleFormUrl: '',
+      gmailSmtpEmail: smtp.email,
+      gmailAppPasswordConfigured: Boolean(smtp.appPassword),
       ownerEmail: OWNER_EMAIL,
     };
   }
@@ -133,7 +189,16 @@ function readBackendConfig(): BackendConfig {
 
 function writeBackendConfig(config: BackendConfig): void {
   ensureStorage();
-  fs.writeFileSync(BACKEND_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+  const safeCopy: BackendConfig = {
+    appsScriptWebAppUrl: config.appsScriptWebAppUrl,
+    spreadsheetUrl: config.spreadsheetUrl,
+    driveCvFolderUrl: config.driveCvFolderUrl,
+    googleFormId: config.googleFormId || '',
+    googleFormUrl: config.googleFormUrl || '',
+    ownerEmail: OWNER_EMAIL,
+    updatedAt: config.updatedAt || new Date().toISOString(),
+  };
+  fs.writeFileSync(BACKEND_CONFIG_FILE, JSON.stringify(safeCopy, null, 2), 'utf8');
 }
 
 function readBrandAssets(): BrandAssets {
@@ -186,40 +251,92 @@ function getPermissionForEmail(
 }
 
 async function verifyGoogleBearerToken(
-  authHeader: string | undefined
+  authHeader: string | undefined,
+  workspaceHeaderToken?: string
 ): Promise<{ email: string; name: string; accessToken: string } | null> {
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.slice(7).trim();
   if (!token) return null;
 
+  const extraWorkspaceToken = workspaceHeaderToken?.trim() || '';
+
   const cacheKey = crypto.createHash('sha256').update(token).digest('hex');
   const cached = tokenVerificationCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
-    return { email: cached.email, name: cached.name, accessToken: token };
+    return {
+      email: cached.email,
+      name: cached.name,
+      accessToken: extraWorkspaceToken || token,
+    };
   }
 
+  // 1. Try Google OAuth Access Token via userinfo endpoint
   try {
     const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return null;
-    const info = (await res.json()) as {
-      email?: string;
-      email_verified?: boolean;
-      name?: string;
-    };
-    if (!info.email || info.email_verified === false) return null;
-    const email = info.email.trim().toLowerCase();
-    const name = info.name?.trim() || email;
-    tokenVerificationCache.set(cacheKey, {
-      email,
-      name,
-      expiresAt: Date.now() + 5 * 60 * 1000,
-    });
-    return { email, name, accessToken: token };
+    if (res.ok) {
+      const info = (await res.json()) as {
+        email?: string;
+        email_verified?: boolean;
+        name?: string;
+      };
+      if (info.email && info.email_verified !== false) {
+        const email = info.email.trim().toLowerCase();
+        const name = info.name?.trim() || email;
+        tokenVerificationCache.set(cacheKey, {
+          email,
+          name,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
+        return { email, name, accessToken: token };
+      }
+    }
   } catch {
-    return null;
+    // Fall through to Firebase ID Token lookup
   }
+
+  // 2. Verify persistent Firebase ID Token via Identity Toolkit accounts:lookup
+  if (FIREBASE_WEB_API_KEY) {
+    try {
+      const fbRes = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken: token }),
+        }
+      );
+      if (fbRes.ok) {
+        const fbData = (await fbRes.json()) as {
+          users?: Array<{
+            email?: string;
+            emailVerified?: boolean;
+            displayName?: string;
+          }>;
+        };
+        const userRecord = fbData.users?.[0];
+        if (userRecord?.email && userRecord.emailVerified !== false) {
+          const email = userRecord.email.trim().toLowerCase();
+          const name = userRecord.displayName?.trim() || email;
+          tokenVerificationCache.set(cacheKey, {
+            email,
+            name,
+            expiresAt: Date.now() + 5 * 60 * 1000,
+          });
+          return {
+            email,
+            name,
+            accessToken: extraWorkspaceToken || token,
+          };
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 interface AuthenticatedAdmin {
@@ -234,7 +351,10 @@ async function requireAdmin(
   req: Request,
   res: Response
 ): Promise<AuthenticatedAdmin | null> {
-  const verified = await verifyGoogleBearerToken(req.header('Authorization'));
+  const verified = await verifyGoogleBearerToken(
+    req.header('Authorization'),
+    req.header('X-Google-Access-Token')
+  );
   if (!verified) {
     res.status(401).json({
       error: 'Authentication required. Sign in with an authorized Google administrator account.',
@@ -347,39 +467,74 @@ async function callAppsScriptBackend(
 
 async function dispatchApplicationEmailNotification(
   record: RecruitmentApplication,
-  appsScriptEmailSent: boolean
+  appsScriptEmailSent: boolean,
+  baseUrlOverride?: string
 ): Promise<EmailNotificationRecord> {
+  const effectiveBaseUrl = (baseUrlOverride || APP_BASE_URL).replace(/\/$/, '');
   const subject = 'New Application Received – ZoZo Live Recruitment';
-  const viewUrl = `${APP_BASE_URL}/admin?id=${encodeURIComponent(record.id)}`;
+  const viewUrl = `${effectiveBaseUrl}/admin?id=${encodeURIComponent(record.id)}`;
+  const cvAbsoluteLink = record.driveCvUrl || `${effectiveBaseUrl}${record.cvLink}`;
   let deliveryStatus: EmailNotificationRecord['deliveryStatus'] = appsScriptEmailSent
     ? 'Sent via Apps Script MailApp'
-    : 'Logged (Deploy Apps Script for Gmail Delivery)';
+    : 'Logged (Configure Gmail SMTP or Apps Script for Delivery)';
 
-  const resendApiKey = process.env.RESEND_API_KEY;
-  if (!appsScriptEmailSent && resendApiKey) {
+  const lines = [
+    record.language === 'bn'
+      ? 'New Application Received – ZoZo Live Recruitment (বাংলা আবেদন)'
+      : 'New Application Received – ZoZo Live Recruitment',
+    '================================================',
+    '',
+    `Internal Application ID : ${record.id}`,
+    `Applicant Name          : ${record.name}`,
+    `Country                 : ${record.country}`,
+    `WhatsApp Number         : ${record.whatsapp}`,
+    `Applied Position        : ${record.position}`,
+    `Currently Working App   : ${record.currentApp}`,
+  ];
+  if (record.position === 'Super Admin') {
+    lines.push(`Number of Admins        : ${record.adminsCount ?? 0}`);
+    lines.push(`Number of Agencies      : ${record.agenciesCount ?? 0}`);
+  } else if (record.position === 'Admin') {
+    lines.push(`Number of Agencies      : ${record.agenciesCount ?? 0}`);
+  } else if (record.position === 'Coin Seller') {
+    lines.push(`Coin Selling Package    : ${record.coinPackage ?? '—'}`);
+  }
+  lines.push(`Experience Details      : ${record.workExperience}`);
+  lines.push(`CV Link                 : ${cvAbsoluteLink}`);
+  lines.push(`View Application        : ${viewUrl}`);
+  const emailBody = lines.join('\n');
+
+  // Option A: Real Gmail SMTP delivery via App Password (works 24/7 even without Apps Script)
+  const smtpSecret = readGmailSmtpSecret();
+  if (!appsScriptEmailSent && smtpSecret.appPassword) {
     try {
-      const lines = [
-        'New Application Received – ZoZo Live Recruitment',
-        '',
-        `Internal Application ID: ${record.id}`,
-        `Applicant Name: ${record.name}`,
-        `Country: ${record.country}`,
-        `WhatsApp Number: ${record.whatsapp}`,
-        `Applied Position: ${record.position}`,
-        `Currently Working Live App: ${record.currentApp}`,
-      ];
-      if (record.position === 'Super Admin') {
-        lines.push(`Number of Admins: ${record.adminsCount ?? 0}`);
-        lines.push(`Number of Agencies: ${record.agenciesCount ?? 0}`);
-      } else if (record.position === 'Admin') {
-        lines.push(`Number of Agencies: ${record.agenciesCount ?? 0}`);
-      } else if (record.position === 'Coin Seller') {
-        lines.push(`Preferred Coin Package: ${record.coinPackage ?? '—'}`);
-      }
-      lines.push(`Work / Coin Experience: ${record.workExperience}`);
-      lines.push(`CV Link: ${record.driveCvUrl || `${APP_BASE_URL}${record.cvLink}`}`);
-      lines.push(`View Application: ${viewUrl}`);
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: smtpSecret.email,
+          pass: smtpSecret.appPassword,
+        },
+      });
+      await transporter.sendMail({
+        from: `ZoZo Live Recruitment <${smtpSecret.email}>`,
+        to: OWNER_EMAIL,
+        subject,
+        text: emailBody,
+      });
+      deliveryStatus = 'Sent to Gmail (SMTP)';
+    } catch (smtpErr) {
+      console.warn('Gmail SMTP notification failed:', smtpErr);
+    }
+  }
 
+  // Option B: Resend API fallback if configured
+  const resendApiKey = process.env.RESEND_API_KEY;
+  if (
+    !appsScriptEmailSent &&
+    deliveryStatus !== 'Sent to Gmail (SMTP)' &&
+    resendApiKey
+  ) {
+    try {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
@@ -390,7 +545,7 @@ async function dispatchApplicationEmailNotification(
           from: process.env.RESEND_FROM || 'ZoZo Live Recruitment <onboarding@resend.dev>',
           to: [OWNER_EMAIL],
           subject,
-          text: lines.join('\n'),
+          text: emailBody,
         }),
       });
       if (res.ok) {
@@ -415,7 +570,7 @@ async function dispatchApplicationEmailNotification(
     agenciesCount: record.agenciesCount,
     coinPackage: record.coinPackage,
     workExperience: record.workExperience,
-    cvLink: record.driveCvUrl || `${APP_BASE_URL}${record.cvLink}`,
+    cvLink: cvAbsoluteLink,
     viewUrl,
     language: record.language === 'bn' ? 'bn' : 'en',
     deliveryStatus,
@@ -432,7 +587,8 @@ async function dispatchApplicationEmailNotification(
 async function startServer() {
   ensureStorage();
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  app.set('trust proxy', 1);
+  app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
@@ -617,7 +773,9 @@ async function startServer() {
       writeJsonArray(DATA_FILE, existing);
 
       try {
-        await dispatchApplicationEmailNotification(record, appsScriptEmailSent);
+        const host = req.get('host');
+        const reqBaseUrl = host ? `${req.protocol}://${host}` : APP_BASE_URL;
+        await dispatchApplicationEmailNotification(record, appsScriptEmailSent, reqBaseUrl);
       } catch {
         // Safe notification handling: never lose application if email fails
       }
@@ -664,6 +822,168 @@ async function startServer() {
       (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
     );
     return res.json({ applications: apps });
+  });
+
+  app.post('/api/admin/applications', async (req, res) => {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+
+    if (admin.role === 'Viewer') {
+      return res.status(403).json({
+        error: 'Viewer access is read-only. You cannot add applications.',
+      });
+    }
+
+    try {
+      const body = (req.body || {}) as Partial<AdminCreateApplicationPayload>;
+      const name = String(body.name ?? '').trim();
+      const country = String(body.country ?? '').trim();
+      const countryFlag = String(body.countryFlag ?? '').trim();
+      const countryName = String(body.countryName ?? '').trim();
+      const whatsapp = String(body.whatsapp ?? '').trim();
+      const position = body.position as RolePosition;
+      const currentApp = String(body.currentApp ?? '').trim();
+      const workExperience = String(body.workExperience ?? '').trim();
+      const requestedStatus = (body.status || 'Pending') as ApplicationStatus;
+
+      if (!name) return res.status(400).json({ error: 'Full Name is required.' });
+      if (!country) return res.status(400).json({ error: 'Country selection is required.' });
+      if (!WHATSAPP_REGEX.test(whatsapp)) {
+        return res.status(400).json({
+          error: 'Enter a valid WhatsApp number (at least 6 digits).',
+        });
+      }
+      if (!VALID_ROLES.includes(position)) {
+        return res.status(400).json({ error: 'Select a valid recruitment position.' });
+      }
+      if (!currentApp) {
+        return res.status(400).json({ error: 'Currently Working Live App is required.' });
+      }
+      if (!workExperience) {
+        return res.status(400).json({ error: 'Experience description is required.' });
+      }
+      if (!VALID_STATUSES.includes(requestedStatus)) {
+        return res.status(400).json({ error: 'Invalid application status.' });
+      }
+
+      let adminsCount: number | undefined;
+      let agenciesCount: number | undefined;
+      let coinPackage: CoinPackageOption | undefined;
+
+      if (position === 'Super Admin') {
+        const parsedAdmins = Number(body.adminsCount);
+        const parsedAgencies = Number(body.agenciesCount);
+        if (!Number.isInteger(parsedAdmins) || parsedAdmins < 0) {
+          return res.status(400).json({
+            error: 'Number of Admins must be a whole number (0 or higher).',
+          });
+        }
+        if (!Number.isInteger(parsedAgencies) || parsedAgencies < 0) {
+          return res.status(400).json({
+            error: 'Number of Agencies must be a whole number (0 or higher).',
+          });
+        }
+        adminsCount = parsedAdmins;
+        agenciesCount = parsedAgencies;
+      } else if (position === 'Admin') {
+        const parsedAgencies = Number(body.agenciesCount);
+        if (!Number.isInteger(parsedAgencies) || parsedAgencies < 0) {
+          return res.status(400).json({
+            error: 'Number of Agencies must be a whole number (0 or higher).',
+          });
+        }
+        agenciesCount = parsedAgencies;
+      } else if (position === 'Coin Seller') {
+        const pkg = String(body.coinPackage ?? '').trim() as CoinPackageOption;
+        if (!VALID_COIN_PACKAGES.includes(pkg)) {
+          return res.status(400).json({
+            error: 'Select a valid coin-selling package ($500, $800, or $1,000).',
+          });
+        }
+        coinPackage = pkg;
+      }
+
+      const appId = generateApplicationId();
+      const submittedAt = new Date().toISOString();
+
+      let cvFileName = 'Added Manually by Admin (No CV)';
+      let cvMimeType = '';
+      let cvFileSize = 0;
+      let cvLink = '';
+
+      if (body.cvFile && body.cvFile.base64 && body.cvFile.name) {
+        const decodedCv = validateAndDecodeCv(body.cvFile);
+        const cvStorageName = `${appId}${decodedCv.ext}`;
+        fs.writeFileSync(path.join(PRIVATE_CV_DIR, cvStorageName), decodedCv.buffer);
+        cvFileName = decodedCv.safeName;
+        cvMimeType = decodedCv.mimeType;
+        cvFileSize = decodedCv.buffer.length;
+        cvLink = `/api/admin/cv/${encodeURIComponent(appId)}`;
+      }
+
+      const config = readBackendConfig();
+      let driveCvUrl = '';
+      let appsScriptSynced = false;
+
+      if (config.appsScriptWebAppUrl) {
+        const gsRes = await callAppsScriptBackend(config.appsScriptWebAppUrl, {
+          action: 'submitApplication',
+          adminManualEntry: true,
+          id: appId,
+          submittedAt,
+          name,
+          country,
+          whatsapp,
+          position,
+          currentApp,
+          adminsCount,
+          agenciesCount,
+          coinPackage,
+          workExperience,
+          status: requestedStatus,
+          language: 'en',
+          cvFile: body.cvFile || undefined,
+        });
+        if (gsRes && gsRes.ok) {
+          appsScriptSynced = true;
+          driveCvUrl = String(gsRes.cvFileUrl || '');
+        }
+      }
+
+      const record: RecruitmentApplication = {
+        id: appId,
+        name,
+        country,
+        countryFlag,
+        countryName: countryName || country,
+        whatsapp,
+        position,
+        currentApp,
+        adminsCount,
+        agenciesCount,
+        coinPackage,
+        workExperience,
+        cvFileName,
+        cvMimeType,
+        cvFileSize,
+        cvLink,
+        driveCvUrl: driveCvUrl || undefined,
+        status: requestedStatus,
+        submittedAt,
+        language: 'en',
+        appsScriptSynced,
+      };
+
+      const existing = readJsonArray<RecruitmentApplication>(DATA_FILE);
+      existing.unshift(record);
+      writeJsonArray(DATA_FILE, existing);
+
+      return res.status(201).json({ application: record });
+    } catch (err) {
+      return res.status(400).json({
+        error: err instanceof Error ? err.message : 'Unable to add application.',
+      });
+    }
   });
 
   app.patch('/api/admin/applications/:id', async (req, res) => {
@@ -989,8 +1309,76 @@ async function startServer() {
       language: lang,
     };
 
-    const notification = await dispatchApplicationEmailNotification(sampleApp, false);
+    const config = readBackendConfig();
+    let appsScriptEmailSent = false;
+    if (config.appsScriptWebAppUrl) {
+      const gsRes = await callAppsScriptBackend(config.appsScriptWebAppUrl, {
+        action: 'sendTestNotification',
+        accessToken: admin.accessToken,
+        sampleApp,
+      });
+      appsScriptEmailSent = Boolean(gsRes && gsRes.ok && gsRes.emailSent);
+    }
+
+    const host = req.get('host');
+    const reqBaseUrl = host ? `${req.protocol}://${host}` : APP_BASE_URL;
+    const notification = await dispatchApplicationEmailNotification(
+      sampleApp,
+      appsScriptEmailSent,
+      reqBaseUrl
+    );
     return res.status(201).json({ notification });
+  });
+
+  app.put('/api/admin/gmail-settings', async (req, res) => {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    if (admin.role !== 'Owner') {
+      return res.status(403).json({ error: 'Only the primary Owner can configure Gmail SMTP.' });
+    }
+
+    const email = String(req.body?.email || OWNER_EMAIL).trim().toLowerCase();
+    const appPassword = String(req.body?.appPassword || '').replace(/\s+/g, '').trim();
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid Gmail address.' });
+    }
+    if (appPassword.length < 12) {
+      return res.status(400).json({
+        error: 'Enter your 16-character Google App Password (without needing spaces).',
+      });
+    }
+
+    try {
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: email, pass: appPassword },
+      });
+      await transporter.verify();
+      writeGmailSmtpSecret(email, appPassword);
+      return res.json({
+        ok: true,
+        config: readBackendConfig(),
+      });
+    } catch (err) {
+      return res.status(400).json({
+        error:
+          err instanceof Error
+            ? `Gmail SMTP verification failed: ${err.message}`
+            : 'Unable to verify Gmail App Password. Make sure 2-Step Verification and App Password are enabled.',
+      });
+    }
+  });
+
+  app.delete('/api/admin/gmail-settings', async (req, res) => {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    if (admin.role !== 'Owner') {
+      return res.status(403).json({ error: 'Only the primary Owner can clear Gmail SMTP.' });
+    }
+    if (fs.existsSync(GMAIL_SMTP_FILE)) {
+      fs.unlinkSync(GMAIL_SMTP_FILE);
+    }
+    return res.json({ ok: true, config: readBackendConfig() });
   });
 
   // Google Apps Script & Sheets Backend Config (Owner-only write)

@@ -54,13 +54,6 @@ export function TopBar({
           >
             {copy.nav.process}
           </button>
-          <button
-            type="button"
-            onClick={() => handleAction(onScrollToApply)}
-            className="py-1 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            {copy.nav.apply}
-          </button>
           <a
             href="https://download.zozolive.site/"
             target="_blank"
@@ -108,13 +101,6 @@ export function TopBar({
             className="block w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium text-slate-200 hover:bg-white/10"
           >
             {copy.nav.process}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleAction(onScrollToApply)}
-            className="block w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium text-slate-200 hover:bg-white/10"
-          >
-            {copy.nav.apply}
           </button>
           <a
             href="https://download.zozolive.site/"

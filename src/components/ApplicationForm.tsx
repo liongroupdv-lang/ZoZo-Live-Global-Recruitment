@@ -59,7 +59,7 @@ type FieldErrorKey =
 
 const MAX_CV_BYTES = 5 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx'];
-const WHATSAPP_REGEX = /^[+]?[0-9][0-9\s\-()]{5,22}$/;
+const WHATSAPP_REGEX = /^[+]?[0-9][0-9\s\-()]{5,25}$/;
 
 function createSubmissionToken(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -117,11 +117,13 @@ export function ApplicationForm({
   const [isDragging, setIsDragging] = useState(false);
 
   const [invalidFields, setInvalidFields] = useState<Partial<Record<FieldErrorKey, boolean>>>({});
+  const [hasValidationBanner, setHasValidationBanner] = useState(false);
   const [submitErrorType, setSubmitErrorType] = useState<'none' | 'network' | 'server' | 'duplicate'>('none');
   const [serverErrorText, setServerErrorText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submissionToken, setSubmissionToken] = useState<string>(() => createSubmissionToken());
   const [receipt, setReceipt] = useState<ApplicationReceipt | null>(null);
+  const formContainerRef = useRef<HTMLFormElement>(null);
 
   const totalSteps = selectedRole === 'Super Admin' ? 9 : 8;
 
@@ -267,7 +269,17 @@ export function ApplicationForm({
     }
 
     setInvalidFields(nextErrors);
-    return Object.keys(nextErrors).length === 0;
+    const isValid = Object.keys(nextErrors).length === 0;
+    setHasValidationBanner(!isValid);
+    if (!isValid) {
+      setTimeout(() => {
+        const firstErr = formContainerRef.current?.querySelector('[data-field-error="true"]');
+        if (firstErr instanceof HTMLElement) {
+          firstErr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 20);
+    }
+    return isValid;
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -275,6 +287,7 @@ export function ApplicationForm({
     if (submitting) return;
     setSubmitErrorType('none');
     setServerErrorText('');
+    setHasValidationBanner(false);
 
     if (!validate() || !country || !selectedRole || !cvFile) return;
 
@@ -439,6 +452,7 @@ export function ApplicationForm({
 
   return (
     <form
+      ref={formContainerRef}
       onSubmit={handleSubmit}
       noValidate
       className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm"
@@ -505,6 +519,7 @@ export function ApplicationForm({
             <p className="text-xs text-slate-500 mt-0.5 mb-2">{copy.form.questions.name.help}</p>
             <input
               id="applicant-name"
+              data-field-error={invalidFields.name ? 'true' : undefined}
               type="text"
               value={name}
               onChange={(e) => {
@@ -526,7 +541,7 @@ export function ApplicationForm({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
+            <div data-field-error={invalidFields.country ? 'true' : undefined}>
               <label className="block text-sm font-semibold text-slate-900">
                 {copy.form.questions.country.label} <span className="text-red-600">*</span>
               </label>
@@ -560,6 +575,7 @@ export function ApplicationForm({
               </p>
               <input
                 id="whatsapp-number"
+                data-field-error={invalidFields.whatsapp ? 'true' : undefined}
                 type="tel"
                 value={whatsapp}
                 onChange={(e) => {
@@ -593,7 +609,7 @@ export function ApplicationForm({
             </p>
           </div>
 
-          <div>
+          <div data-field-error={invalidFields.position ? 'true' : undefined}>
             <span className="block text-sm font-semibold text-slate-900">
               {copy.form.questions.position.label} <span className="text-red-600">*</span>
             </span>
@@ -665,6 +681,7 @@ export function ApplicationForm({
             </p>
             <input
               id="current-app"
+              data-field-error={invalidFields.currentApp ? 'true' : undefined}
               type="text"
               value={currentApp}
               onChange={(e) => {
@@ -697,6 +714,7 @@ export function ApplicationForm({
                 </p>
                 <input
                   id="admins-count"
+                  data-field-error={invalidFields.adminsCount ? 'true' : undefined}
                   type="number"
                   min={0}
                   step={1}
@@ -732,6 +750,7 @@ export function ApplicationForm({
                 </p>
                 <input
                   id="agencies-count-sa"
+                  data-field-error={invalidFields.agenciesCount ? 'true' : undefined}
                   type="number"
                   min={0}
                   step={1}
@@ -771,6 +790,7 @@ export function ApplicationForm({
               </p>
               <input
                 id="agencies-count-admin"
+                data-field-error={invalidFields.agenciesCount ? 'true' : undefined}
                 type="number"
                 min={0}
                 step={1}
@@ -796,7 +816,7 @@ export function ApplicationForm({
 
           {/* Conditional Package Selector for Coin Seller */}
           {selectedRole === 'Coin Seller' && (
-            <div>
+            <div data-field-error={invalidFields.coinPackage ? 'true' : undefined}>
               <span className="block text-sm font-semibold text-slate-900">
                 {copy.form.questions.coinPackage.label} <span className="text-red-600">*</span>
               </span>
@@ -852,6 +872,7 @@ export function ApplicationForm({
             </p>
             <textarea
               id="work-experience"
+              data-field-error={invalidFields.workExperience ? 'true' : undefined}
               rows={4}
               value={workExperience}
               onChange={(e) => {
@@ -904,6 +925,7 @@ export function ApplicationForm({
 
             {!cvFile ? (
               <div
+                data-field-error={invalidFields.cvFile ? 'true' : undefined}
                 onClick={() => fileInputRef.current?.click()}
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -936,7 +958,11 @@ export function ApplicationForm({
                 <p className="mt-1 text-xs text-slate-500">{copy.form.questions.cvFile.dropHint}</p>
                 <button
                   type="button"
-                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#4F46E5] bg-white border border-slate-300 rounded-xl hover:bg-slate-50"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#4F46E5] bg-white border border-slate-300 rounded-xl hover:bg-slate-50 cursor-pointer"
                 >
                   {copy.form.questions.cvFile.chooseButton}
                 </button>
@@ -1013,6 +1039,17 @@ export function ApplicationForm({
             <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
           </a>
         </section>
+
+        {hasValidationBanner && (
+          <div
+            role="alert"
+            className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-xs sm:text-sm text-red-700 font-medium"
+          >
+            {language === 'bn'
+              ? 'অনুগ্রহ করে উপরে লাল চিহ্নিত সকল প্রয়োজনীয় তথ্য সঠিকভাবে পূরণ করুন এবং আপনার সিভি আপলোড করুন।'
+              : 'Please complete all highlighted required fields above and attach your CV before submitting.'}
+          </div>
+        )}
 
         {/* Submit Application */}
         <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">

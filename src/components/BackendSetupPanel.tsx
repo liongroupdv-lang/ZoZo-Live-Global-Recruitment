@@ -28,8 +28,13 @@ export function BackendSetupPanel({
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const isOwner = actorRole === 'Owner';
-  const publicApplicationLink = `${publicOrigin}/`;
-  const privateAdminLink = `${publicOrigin}/admin`;
+  const isDevPreview = publicOrigin.includes('ais-dev-');
+  const sharedBaseOrigin =
+    publicOrigin && !publicOrigin.includes('localhost') && !publicOrigin.includes('127.0.0.1')
+      ? publicOrigin.replace(/\/$/, '')
+      : 'https://ais-dev-menrapitnclw3tdj2oqpih-957770790639.asia-east1.run.app';
+  const publicApplicationLink = `${sharedBaseOrigin}/`;
+  const privateAdminLink = `${sharedBaseOrigin}/admin`;
 
   const scriptCode = useMemo(
     () =>
@@ -105,6 +110,17 @@ export function BackendSetupPanel({
           notifications under <span className="font-mono text-slate-900">{config.ownerEmail}</span>.
         </p>
       </div>
+
+      {isDevPreview && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 leading-relaxed">
+          <strong>Preview Mode Notice:</strong> You are currently viewing the private{' '}
+          <span className="font-mono">ais-dev</span> development URL. To make a public URL active
+          for external applicants (without seeing &ldquo;Page not found&rdquo; on{' '}
+          <span className="font-mono">ais-pre-...</span>), click{' '}
+          <strong>Share App</strong> or <strong>Deploy App</strong> in Google AI Studio first, then
+          share that published/shared URL.
+        </div>
+      )}
 
       {/* Official Two Separate Links + Private Google Sheet Link */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
